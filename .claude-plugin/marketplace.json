@@ -1,0 +1,7 @@
+{
+  "name": "queue-add",
+  "owner": { "name": "Gabriel Veiga", "url": "https://github.com/GabrielVeiga1" },
+  "plugins": [
+    { "name": "claude-queue", "source": "./" }
+  ]
+}

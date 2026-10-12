@@ -1,0 +1,26 @@
+{
+  "name": "claude-queue",
+  "displayName": "Claude Queue",
+  "version": "1.0.0",
+  "description": "Fila local de prompts pro Claude Code: encadeia tasks automaticamente na mesma sessão (com confirmação de sucesso por marcador), roda em background via claude -p, e recua sozinho quando bate rate limit. Sem session key, sem endpoint interno.",
+  "author": {
+    "name": "Gabriel Veiga",
+    "url": "https://github.com/GabrielVeiga1"
+  },
+  "homepage": "https://github.com/GabrielVeiga1/queue-add",
+  "repository": "https://github.com/GabrielVeiga1/queue-add",
+  "license": "MIT",
+  "keywords": ["queue", "automation", "productivity", "unattended", "rate-limit"],
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/queue-stop-hook.js\""
+          }
+        ]
+      }
+    ]
+  }
+}
