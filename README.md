@@ -1,120 +1,130 @@
 # claude-queue
 
-Fila local de prompts pro [Claude Code](https://claude.com/claude-code): enfileira
-tarefas, roda sequencial, **encadeia automaticamente** a próxima task assim que a
-atual termina — na mesma sessão, sem você digitar nada — e recua sozinho quando
-bate rate limit, em vez de desistir.
+Fila de tarefas pro [Claude Code](https://claude.com/claude-code). Você enfileira
+vários pedidos, ele roda um atrás do outro sozinho — sem você precisar ficar
+digitando "próximo" toda hora.
 
-Plugin oficial do Claude Code: zero dependência externa (Node, que o próprio
-Claude Code já exige), instala com um comando.
+## Pra que serve, na prática
 
-Inspirado em [vasiliyk/claude-queue](https://github.com/vasiliyk/claude-queue), mas
-com uma diferença de arquitetura deliberada:
+Em vez de:
+```
+você escreve pedido 1 → espera terminar → escreve pedido 2 → espera → escreve pedido 3 ...
+```
 
-| | vasiliyk/claude-queue | claude-queue (este) |
-|---|---|---|
-| Autenticação | `CLAUDE_SESSION_KEY` extraída de cookie do claude.ai | nenhuma — usa o CLI `claude` já autenticado na sua máquina |
-| Monitoramento de limite | acessa endpoint interno não documentado do claude.ai | reage ao próprio erro que o CLI oficial já devolve, sem tocar infraestrutura interna |
-| Risco de ToS | o próprio repo admite que pode violar os Termos de Serviço | automação em cima do produto oficial |
-| Confirmação de sucesso | — | marcador explícito `[QUEUE:OK]` / `[QUEUE:FAIL]`, escrito pelo próprio Claude, lido pelo hook |
-| Distribuição | clone manual + env var | plugin oficial do Claude Code |
+Você faz:
+```
+/queue add "pedido 1"
+/queue add "pedido 2"
+/queue add "pedido 3"
+```
 
-## O que faz
+E o Claude vai emendando um depois do outro sozinho, na mesma conversa, sem você
+precisar voltar lá a cada vez.
 
-- **`/queue add "<prompt>"`** — enfileira, com prioridade e dependências entre tasks
-- **`/queue list`** — status de cada task (queued/running/done/failed/rate_limited)
-- **Encadeamento automático (hook `Stop`)** — toda vez que uma resposta termina, confere se a task anterior teve sucesso confirmado e injeta a próxima na mesma conversa. Sem confirmação = para a corrente, não arrisca encadear em cima de algo quebrado.
-- **`/queue run`** — modo background: processa a fila inteira como subprocessos `claude -p`, pra deixar rodando desatendido (overnight, por exemplo)
-- **Retry automático em rate limit** — detecta quando `claude -p` bateu o limite de uso e reagenda com backoff exponencial, em vez de marcar como falha
-- **`/queue dashboard`** — painel web local, ao vivo, pra acompanhar a fila (print/gif-friendly)
-- **`/queue stats`** — total de tasks, taxa de sucesso, tempo total rodado
+## O que ele faz
 
-Dashboard e stats só leem `~/.claude-queue/tasks.json` — não chamam o Claude, não custam token.
+- **Enfileira pedidos** com prioridade (quem é mais importante roda primeiro)
+- **Encadeia sozinho**: termina uma tarefa, já emenda a próxima automaticamente
+- **Só avança se a tarefa anterior deu certo** — se algo quebrou, ele para a fila em vez de continuar empilhando erro em cima de erro
+- **Dependência entre tarefas**: dá pra dizer "só roda a tarefa B depois que a A terminar com sucesso"
+- **Painel visual (dashboard)**: uma telinha no navegador mostrando o status de tudo, ao vivo
+- **Estatísticas**: quantas tarefas rodaram, taxa de sucesso, tempo total
 
-## O bug de rate limit que isso contorna
-
-O `claude -p` tem um bug documentado
-([anthropics/claude-code#79500](https://github.com/anthropics/claude-code/issues/79500)):
-ele sempre sai com exit code `0`, **mesmo quando a chamada falha por rate
-limit**. Não dá pra confiar em exit code pra saber se deu certo.
-
-A solução: rodar com `--output-format json` e decidir pelo campo `is_error`
-da resposta estruturada (o `subtype` também mente — diz "success" mesmo com
-erro). Quando o texto do erro bate com "rate limit reached" e afins, a task
-vira `rate_limited` com backoff exponencial (5min → 10min → 20min... até 4h)
-em vez de `failed`. Claude Code não expõe timestamp de reset em nenhum
-formato de saída documentado, então o backoff é local — não tem como saber
-exatamente quando o limite libera, só tentar de novo mais tarde.
+Tudo roda local, na sua máquina, usando o Claude Code que você já tem instalado
+e logado. Não precisa configurar nada extra, não precisa de senha ou chave de
+acesso separada.
 
 ## Instalação
 
-Requisitos: [Claude Code](https://claude.com/claude-code) v2.1.275+ (sessão) ou v2.1.292+ (shell), já logado.
-
-**Dentro de uma sessão do Claude Code:**
+Dentro de uma sessão do Claude Code, digite:
 ```
 /plugin marketplace add GabrielVeiga1/queue-add
 /plugin install claude-queue@queue-add
 ```
 
-**Ou pelo shell:**
-```bash
-claude plugin marketplace add GabrielVeiga1/queue-add
-claude plugin install claude-queue@queue-add
-```
+Depois disso, feche e abra a sessão de novo (só da primeira vez, pra carregar
+o plugin direito).
 
-Reinicie sessões abertas pra pegar o hook `Stop` novo.
-
-### Desinstalar
-
+Pra desinstalar:
 ```
 /plugin uninstall claude-queue@queue-add
 ```
+(o histórico de tarefas não é apagado, fica guardado caso queira reinstalar depois)
 
-Dados da fila em `~/.claude-queue/` não são apagados (histórico de tasks e logs ficam preservados).
+## Como usar
 
-## Uso básico
-
-Dentro de uma sessão do Claude Code:
-
+### Adicionar uma tarefa na fila
 ```
-/queue add "roda os testes e corrige o que falhar" --dir ~/projetos/api --priority 10
-/queue add "atualiza o changelog" --dir ~/projetos/api --priority 5
+/queue add "roda os testes e corrige o que falhar"
+```
+
+Opções que dá pra combinar:
+```
+/queue add "atualiza o changelog" --dir ~/projetos/api --priority 10
+```
+- `--dir <pasta>` — em qual pasta a tarefa deve rodar (padrão: a pasta atual)
+- `--priority <número>` — número maior roda primeiro (padrão: 0)
+- `--after <id>` — só roda depois que a tarefa com esse id terminar com sucesso
+- `--auto` — pula as confirmações de permissão. **Só use em pastas/pedidos que você confia 100%.**
+
+### Ver o que tem na fila
+```
 /queue list
 ```
+Mostra cada tarefa com seu status: `queued` (esperando), `running` (rodando agora),
+`done` (terminou bem), `failed` (deu erro), `rate_limited` (bateu limite de uso,
+vai tentar de novo mais tarde).
 
-A primeira task já começa a rodar sozinha assim que a conversa atual
-terminar. As próximas emendam automaticamente, uma por vez, até a fila
-esvaziar ou alguma falhar.
-
-Pra ver o painel: `/queue dashboard` e abrir `http://127.0.0.1:4317`.
-
-Pra rodar em background (sem depender de sessão aberta — modo overnight):
-`/queue run`. Logs completos ficam em `~/.claude-queue/logs/<id>.log`.
-
-## Estrutura
-
+### Remover uma tarefa
 ```
-claude-queue/
-├── .claude-plugin/
-│   ├── plugin.json          # manifesto do plugin
-│   └── marketplace.json     # self-distribuição via GitHub
-├── skills/queue/SKILL.md    # definição do /queue pro Claude Code
-├── scripts/
-│   ├── queue.js             # CLI da fila (add/list/remove/run/stats/dashboard/chain-*)
-│   ├── dashboard.js         # painel web local
-│   └── lib/
-│       ├── store.js         # persistência (~/.claude-queue/tasks.json)
-│       └── runner.js        # subprocess claude -p, detecção de rate limit, backoff
-└── hooks/
-    └── queue-stop-hook.js   # hook Stop: lê marcador, encadeia próxima task
+/queue remove <id>
 ```
+(o id aparece no `/queue list`)
 
-## Limitações conhecidas
+### Ver o painel visual
+```
+/queue dashboard
+```
+Depois abra `http://127.0.0.1:4317` no navegador. Atualiza sozinho a cada
+poucos segundos. É só leitura — não consome token nem chama o Claude.
 
-- `--auto` roda com `--dangerously-skip-permissions` — só use em prompts/diretórios de confiança total.
-- O encadeamento por hook depende do Claude escrever o marcador corretamente; trate prompts de fontes não confiáveis com o mesmo cuidado que trataria em qualquer outro contexto do Claude Code.
-- Backoff de rate limit é exponencial "no escuro" — Claude Code não informa quando o limite realmente reseta.
-- Dependências entre tasks (`--after`) exigem sucesso (`done`); task `failed` ou `rate_limited` nunca libera a dependente.
+### Ver estatísticas
+```
+/queue stats
+```
+Total de tarefas, taxa de sucesso, tempo total rodando. Também só leitura local.
+
+## Como funciona o encadeamento automático
+
+Você não precisa fazer nada além de usar `/queue add`. Por trás dos panos:
+
+1. Toda vez que uma resposta do Claude termina, o plugin confere se a tarefa
+   que acabou de rodar terminou bem.
+2. Se terminou bem, ele pega a próxima tarefa da fila e já manda rodar, na
+   mesma conversa, sem você precisar digitar nada.
+3. Se não terminou bem (ou não ficou claro se terminou bem), ele **para** —
+   não arrisca empilhar tarefa em cima de algo que pode ter quebrado.
+
+## Se bater o limite de uso
+
+Se o Claude bater o limite de uso no meio de uma tarefa, o plugin não desiste
+na hora — ele marca a tarefa como `rate_limited` e tenta de novo mais tarde,
+esperando um pouco mais a cada tentativa (5min, depois 10min, depois 20min...
+até no máximo 4h de espera).
+
+## Avisos importantes
+
+- **`--auto` pula as confirmações de permissão.** Só use em pedidos e pastas
+  de confiança total — o Claude vai poder mexer em arquivos sem perguntar.
+- **O modo `/queue run` (rodar tudo em background, tipo "deixa rodando a
+  noite inteira") ainda não funciona no Windows.** O encadeamento automático
+  dentro da mesma sessão (o jeito normal de usar, descrito acima) funciona
+  normalmente — é só esse modo específico de rodar sem sessão aberta que
+  está quebrado por enquanto.
+- O painel (`/queue dashboard`) mostra o texto dos pedidos exatamente como
+  foram digitados — evite colar coisas estranhas/código ali dentro.
+- Os dados da fila ficam salvos em `~/.claude-queue/` no seu computador
+  (histórico de tarefas e logs). Nada disso sai da sua máquina.
 
 ## Licença
 
