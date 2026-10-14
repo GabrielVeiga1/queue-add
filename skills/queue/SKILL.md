@@ -51,8 +51,9 @@ Se `${CLAUDE_PLUGIN_ROOT}` não estiver setado (instalação manual/dev), usar o
 
 O plugin já vem com o hook `Stop` registrado. Toda vez que uma resposta termina:
 
-1. Confere se a task que acabou de rodar terminou com `[QUEUE:OK]` na última linha da resposta. Sem esse marcador (ou com `[QUEUE:FAIL] motivo`), considera falha e **para a corrente** — não emenda a próxima task. Isso é fail-safe de propósito: sem confirmação explícita de sucesso, não arrisca encadear em cima de algo que pode ter quebrado.
-2. Se ok, pega a próxima task da fila **pra essa mesma pasta** (`chain-next --cwd`, ver seção `--dir` acima) e injeta como continuação da mesma conversa, sem o usuário digitar nada.
+1. Checa (`has-pending --cwd`) se existe uma task pendente de resultado **pra essa pasta especificamente**. O lock de "task pendente" é escopado por diretório (mapa em `chain_state.json`) — uma sessão travada/fechada no meio de uma task em um projeto não derruba o encadeamento de outros projetos.
+2. Se tem pendente, olha só a ÚLTIMA LINHA não-vazia da resposta (não a resposta inteira) procurando `[QUEUE:OK]` ou `[QUEUE:FAIL] motivo`. Sem marcador OK explícito ali, considera falha e **para a corrente** — fail-safe de propósito, sem confirmação explícita de sucesso não arrisca encadear em cima de algo que pode ter quebrado. Restringir à última linha evita falso-positivo de FAIL quando a resposta só cita/explica o protocolo em algum parágrafo anterior.
+3. Se ok (ou não tinha pendente), pega a próxima task da fila **pra essa mesma pasta** (`chain-next --cwd`, ver seção `--dir` acima) e injeta como continuação da mesma conversa, sem o usuário digitar nada.
 
 O texto do marcador já vem anexado automaticamente ao prompt pelo `chain-next` — não precisa fazer nada manual, só `/queue add`.
 

@@ -22,6 +22,32 @@ const RATE_LIMIT_PATTERNS = [
 
 const DEFAULT_BACKOFF_MS = 5 * 60 * 1000; // 5min
 const MAX_BACKOFF_MS = 4 * 60 * 60 * 1000; // 4h
+const TASK_TIMEOUT_MS = 30 * 60 * 1000; // 30min — evita travar a fila inteira pra sempre se claude -p pendurar
+
+// Resolve o caminho ABSOLUTO do binário `claude` uma vez (memoizado), em vez
+// de deixar o shell procurar pelo nome "claude" sozinho. Isso fecha um
+// vetor real: com shell:true no Windows e cwd=task.dir (pasta arbitrária
+// vinda de --dir), o cmd.exe resolve nomes não-qualificados procurando
+// PRIMEIRO no diretório de trabalho atual, antes do PATH — então um
+// executável `claude.exe`/`claude.cmd` plantado dentro de task.dir seria
+// executado no lugar do CLI real, sem precisar de --auto nem de caractere
+// especial no prompt. Com caminho absoluto, não há nome pra resolver — o
+// cmd.exe/shell roda exatamente esse arquivo, nunca um da pasta da task.
+let cachedClaudeBin = null;
+function resolveClaudeBin() {
+  if (cachedClaudeBin !== null) return cachedClaudeBin;
+  try {
+    const finder = process.platform === "win32" ? "where" : "which";
+    const r = spawnSync(finder, ["claude"], { encoding: "utf8" });
+    const firstLine = (r.stdout || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    cachedClaudeBin = r.status === 0 && firstLine ? firstLine : "claude";
+  } catch {
+    // sem `where`/`which` disponível (improvável) — cai pro nome simples,
+    // mesmo comportamento de antes (spawnSync vai dar ENOENT se não achar)
+    cachedClaudeBin = "claude";
+  }
+  return cachedClaudeBin;
+}
 
 function isRateLimited(text) {
   return RATE_LIMIT_PATTERNS.some((re) => re.test(text));
@@ -53,6 +79,12 @@ function tryParseJson(stdout) {
 function classify(task, stdout, stderr, exitCode, spawnError) {
   if (spawnError && spawnError.code === "ENOENT") {
     return { status: "failed", fail_reason: "comando 'claude' não encontrado no PATH" };
+  }
+  if (spawnError && spawnError.code === "ENOBUFS") {
+    // maxBuffer estourado: a saída do claude -p foi cortada no meio por
+    // exceder o limite (32MB) — sem essa checagem caía no fallback genérico
+    // "saiu com código -1 (ver log)", escondendo a causa real.
+    return { status: "failed", fail_reason: "saída do claude -p excedeu o limite de 32MB e foi cortada (ver log)" };
   }
 
   const parsed = tryParseJson(stdout);
@@ -89,6 +121,15 @@ function runTask(task) {
   store.ensureLogsDir();
   const logPath = path.join(store.LOGS_DIR, `${task.id}.log`);
 
+  // Checa a pasta ANTES de tentar rodar: se task.dir não existe (projeto foi
+  // movido/apagado entre o /queue add e o /queue run), spawnSync também
+  // falha com ENOENT — exatamente o mesmo código de erro de "comando claude
+  // não encontrado". Sem checar antes, as duas causas ficavam
+  // indistinguíveis e o usuário via uma mensagem enganosa.
+  if (!fs.existsSync(task.dir)) {
+    return { ...task, exit_code: -1, duration_ms: 0, status: "failed", fail_reason: `diretório não existe: ${task.dir}` };
+  }
+
   // O prompt vai via STDIN (`input`), nunca como argumento de linha de
   // comando. `claude -p` lê o prompt do stdin quando não recebe argumento
   // posicional. Isso evita dois problemas reais: (1) no Windows, com
@@ -110,11 +151,13 @@ function runTask(task) {
   if (process.platform === "win32") process.noDeprecation = true; // DEP0190 — args são todos literais fixos, sem conteúdo do usuário
 
   const startedAt = Date.now();
-  const result = spawnSync("claude", args, {
+  const result = spawnSync(resolveClaudeBin(), args, {
     cwd: task.dir,
     input: task.prompt,
     encoding: "utf8",
     maxBuffer: 1024 * 1024 * 32,
+    timeout: TASK_TIMEOUT_MS,
+    killSignal: "SIGKILL",
     shell: process.platform === "win32",
   });
   process.noDeprecation = prevNoDeprecation;
@@ -123,7 +166,13 @@ function runTask(task) {
   fs.writeFileSync(logPath, `${result.stdout || ""}\n${result.stderr || ""}`, "utf8");
 
   const exitCode = result.status === null ? -1 : result.status;
-  const outcome = classify(task, result.stdout, result.stderr, exitCode, result.error);
+  // se o spawnSync matou o processo por estourar `timeout` (ou qualquer
+  // outro sinal), isso não é um erro reportado pelo claude -p — sem checar
+  // `result.signal` antes, caía no fallback genérico de classify() como se
+  // fosse um erro comum, sem nenhuma pista de que foi um timeout.
+  const outcome = result.signal
+    ? { status: "failed", fail_reason: `task interrompida por sinal ${result.signal} (provavelmente excedeu o limite de ${Math.round(TASK_TIMEOUT_MS / 60000)}min)` }
+    : classify(task, result.stdout, result.stderr, exitCode, result.error);
 
   task.exit_code = exitCode;
   task.duration_ms = durationMs;
@@ -139,4 +188,4 @@ function runTask(task) {
   return task;
 }
 
-module.exports = { runTask, isRateLimited, backoffDelay, classify, RATE_LIMIT_PATTERNS };
+module.exports = { runTask, isRateLimited, backoffDelay, classify, RATE_LIMIT_PATTERNS, resolveClaudeBin };

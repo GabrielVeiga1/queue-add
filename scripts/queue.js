@@ -115,8 +115,8 @@ function cmdList() {
   const sorted = [...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
   for (const t of sorted) {
     const dep = t.after ? ` after=${t.after}` : "";
-    const status = t.status.padEnd(12);
-    console.log(`[${status}] ${t.id}  p=${t.priority}${dep}  dir=${t.dir}  :: ${t.prompt.slice(0, 70)}`);
+    const status = (t.status || "desconhecido").padEnd(12);
+    console.log(`[${status}] ${t.id}  p=${t.priority}${dep}  dir=${t.dir}  :: ${(t.prompt || "").slice(0, 70)}`);
   }
 }
 
@@ -127,6 +127,10 @@ function cmdRemove(args) {
   if (next.length === tasks.length) {
     console.error(`não encontrado: ${id}`);
     process.exit(1);
+  }
+  const dependents = next.filter((t) => t.after === id && (t.status === "queued" || t.status === "rate_limited"));
+  if (dependents.length > 0) {
+    console.error(`aviso: ${dependents.length} task(s) dependem de ${id} via --after e vão ficar travadas pra sempre (${dependents.map((t) => t.id).join(", ")})`);
   }
   store.save(next);
   console.log(`removida: ${id}`);
@@ -199,20 +203,25 @@ function cmdRun(args) {
   }
 }
 
+function cmdHasPending(args) {
+  const cwd = strArg(args, "cwd");
+  process.exit(store.loadChainState(cwd) !== null ? 0 : 1);
+}
+
 function cmdChainNext(args) {
-  const state = store.loadChainState();
+  const cwd = strArg(args, "cwd");
+  const state = store.loadChainState(cwd);
   if (state !== null) {
     process.exit(3);
   }
   const tasks = store.load();
-  const cwd = strArg(args, "cwd");
   const next = pickNext(tasks, cwd);
   if (!next) process.exit(2);
 
   next.status = "running";
   next.started_at = now();
   store.save(tasks);
-  store.saveChainState({ pending_id: next.id });
+  store.saveChainState(cwd, { pending_id: next.id });
 
   console.log(next.prompt + CHAIN_INSTRUCTIONS);
 }
@@ -220,7 +229,8 @@ function cmdChainNext(args) {
 function cmdChainResult(args) {
   const status = args._[0];
   const reason = args._[1];
-  const state = store.loadChainState();
+  const cwd = strArg(args, "cwd");
+  const state = store.loadChainState(cwd);
   if (state === null) return;
 
   const tasks = store.load();
@@ -229,9 +239,16 @@ function cmdChainResult(args) {
     t.status = status === "ok" ? "done" : "failed";
     t.finished_at = now();
     if (status !== "ok" && reason) t.fail_reason = reason;
+    // o modo run/background já calcula duration_ms via runner.js; o
+    // encadeamento em sessão (esse caminho) não passa pelo runner, então sem
+    // isso /queue stats mostrava sempre 0min de tempo rodado mesmo com
+    // tasks concluídas pelo fluxo principal divulgado no README.
+    if (!t.duration_ms && t.started_at && t.finished_at) {
+      t.duration_ms = Date.parse(t.finished_at) - Date.parse(t.started_at);
+    }
   }
   store.save(tasks);
-  store.saveChainState(null);
+  store.saveChainState(cwd, null);
 }
 
 function cmdStats() {
@@ -241,8 +258,9 @@ function cmdStats() {
   let withDuration = 0;
   for (const t of tasks) {
     byStatus[t.status] = (byStatus[t.status] || 0) + 1;
-    if (t.duration_ms) {
-      totalDurationMs += t.duration_ms;
+    const duration = t.duration_ms || (t.started_at && t.finished_at ? Date.parse(t.finished_at) - Date.parse(t.started_at) : 0);
+    if (duration) {
+      totalDurationMs += duration;
       withDuration++;
     }
   }
@@ -272,6 +290,8 @@ function main() {
       return cmdRemove(args);
     case "run":
       return cmdRun(args);
+    case "has-pending":
+      return cmdHasPending(args);
     case "chain-next":
       return cmdChainNext(args);
     case "chain-result":
@@ -286,9 +306,16 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  console.error(`erro inesperado: ${err.message}`);
-  process.exit(1);
+// só roda main() quando chamado direto (`node queue.js ...`), não quando
+// outro módulo faz require() nele — é isso que permite os testes em test/
+// importarem as funções puras abaixo sem disparar a CLI.
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    console.error(`erro inesperado: ${err.message}`);
+    process.exit(1);
+  }
 }
+
+module.exports = { parseArgs, strArg, sameDir, isEligible, pickNext };

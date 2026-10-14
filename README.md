@@ -34,6 +34,24 @@ Tudo roda local, na sua máquina, usando o Claude Code que você já tem instala
 e logado. Não precisa configurar nada extra, não precisa de senha ou chave de
 acesso separada.
 
+**Cada tarefa da fila é uma execução real do Claude Code e conta pro seu limite
+de uso normal** — exatamente como se você tivesse digitado o pedido você mesmo.
+Enfileirar 20 tarefas pesadas consome cota 20x mais rápido do que fazer uma de
+cada vez manualmente; o plugin não inventa cota nova, só evita você ficar
+colado na tela esperando.
+
+## Por que isso é seguro de instalar
+
+- Usa só o CLI oficial `claude -p`, já autenticado localmente — nenhuma session
+  key, cookie ou endpoint interno de claude.ai é tocado.
+- Sem risco de ToS: é só automação de linha de comando em cima do produto oficial.
+- `--auto` é opt-in explícito por tarefa — por padrão respeita os prompts de
+  permissão normais do Claude Code.
+- Dashboard e stats só leem dados locais (`~/.claude-queue/`) — não fazem
+  chamada nenhuma ao Claude, não custam token extra, e o servidor do dashboard
+  só aceita conexão vinda de `127.0.0.1`/`localhost` (protegido contra DNS
+  rebinding).
+
 ## Instalação
 
 Dentro de uma sessão do Claude Code, digite:
@@ -125,6 +143,30 @@ até no máximo 4h de espera).
   — ele registra os casos em que o hook não achou o marcador de conclusão.
 - Os dados da fila ficam salvos em `~/.claude-queue/` no seu computador
   (histórico de tarefas e logs). Nada disso sai da sua máquina.
+
+## Limitações conhecidas
+
+- **Sem lock entre processos.** `/queue add`/`/queue remove`/`/queue run`
+  rodando ao mesmo tempo em terminais diferentes pode, em janelas de tempo bem
+  apertadas, perder uma escrita. Uso normal (um terminal por vez) não é afetado.
+- **Tarefa trava em `running` se o processo morrer no meio** (Ctrl+C forçado,
+  queda de energia, sessão fechada à força). Ela não volta sozinha pra fila —
+  remova e recrie com `/queue remove <id>` + `/queue add`.
+- **Timeout de 30min por tarefa** no modo `/queue run` (background): se o
+  `claude -p` travar além disso, a tarefa é marcada `failed` e a fila segue
+  pra próxima, em vez de ficar parada pra sempre.
+- `--after` não detecta dependência impossível de satisfazer (ex: task
+  removida que outras dependiam dela) — a(s) task(s) dependente(s) ficam
+  `queued` pra sempre. `/queue remove` avisa quando isso vai acontecer.
+
+## Desenvolvimento
+
+Sem dependências externas. Pra rodar a suíte de testes (usa só o `node:test`
+nativo, Node 18+):
+```
+npm test
+```
+ou direto: `node --test`.
 
 ## Licença
 

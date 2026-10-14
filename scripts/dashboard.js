@@ -74,7 +74,7 @@ async function tick() {
   const sorted = [...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
   rows.innerHTML = sorted.map(t => \`
     <tr>
-      <td><span class="status" style="background:\${colors[t.status] || '#888'}">\${esc(t.status)}</span></td>
+      <td><span class="status" style="background:\${colors[t.status] || '#888'}" title="\${esc(t.fail_reason || '')}">\${esc(t.status)}\${t.fail_reason ? ' ⓘ' : ''}</span></td>
       <td>\${esc(t.id)}</td>
       <td>\${esc(t.priority)}</td>
       <td title="\${esc(t.dir)}">\${esc(t.dir.split(/[\\\\/]/).pop())}</td>
@@ -88,9 +88,31 @@ setInterval(tick, 3000);
 </body>
 </html>`;
 
+function parsePort(args) {
+  if (args.port === undefined) return 4317;
+  const port = typeof args.port === "string" ? parseInt(args.port, 10) : NaN;
+  if (Number.isNaN(port) || port < 0 || port > 65535) {
+    console.error(`aviso: --port inválido (recebido "${args.port}"), usando a porta padrão 4317`);
+    return 4317;
+  }
+  return port;
+}
+
 function start(args) {
-  const port = args.port ? parseInt(args.port, 10) : 4317;
+  const port = parsePort(args);
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const server = http.createServer((req, res) => {
+    // Bind em 127.0.0.1 já bloqueia conexão de rede externa direta, mas não
+    // protege contra DNS rebinding (um domínio que resolve pra 127.0.0.1
+    // depois de enganar o navegador) — nesse ataque o header Host continua
+    // sendo o domínio do atacante, nunca 127.0.0.1/localhost, então essa
+    // checagem barra exatamente esse caso sem afetar o uso normal (a própria
+    // página do dashboard sempre faz fetch pra mesma origem).
+    if (!allowedHosts.has(req.headers.host)) {
+      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("forbidden");
+      return;
+    }
     if (req.url === "/api/tasks") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(store.load()));
@@ -98,6 +120,13 @@ function start(args) {
     }
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(PAGE);
+  });
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`erro: porta ${port} já está em uso — tente '/queue dashboard --port <outra>'`);
+      process.exit(1);
+    }
+    throw err;
   });
   server.listen(port, "127.0.0.1", () => {
     console.log(`dashboard rodando em http://127.0.0.1:${port} (Ctrl+C pra parar)`);

@@ -122,6 +122,32 @@ function finalAssistantText(payload) {
   return { text: lastAssistantText(payload.transcript_path || ""), source: "transcript_fallback" };
 }
 
+function lastNonEmptyLine(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line) return line;
+  }
+  return "";
+}
+
+// Restrito à ÚLTIMA LINHA não-vazia da resposta — igual ao que é pedido ao
+// modelo em CHAIN_INSTRUCTIONS. Antes isso procurava o marcador na resposta
+// INTEIRA (text.includes), então se o assistente citasse/explicasse o
+// protocolo (ex: "...vou escrever [QUEUE:FAIL] <motivo> se der erro...") em
+// qualquer parágrafo anterior, a task era marcada como falha mesmo tendo
+// terminado certinho com [QUEUE:OK] na última linha.
+function findMarker(text) {
+  const line = lastNonEmptyLine(text);
+  if (line.includes(FAIL_MARKER)) {
+    return { marker: "fail", reason: line.split(FAIL_MARKER)[1].trim().slice(0, 200) };
+  }
+  if (line.includes(OK_MARKER)) {
+    return { marker: "ok" };
+  }
+  return { marker: null };
+}
+
 function main() {
   let payload;
   try {
@@ -129,27 +155,35 @@ function main() {
   } catch {
     process.exit(0);
   }
+  if (!payload || typeof payload !== "object") payload = {};
 
   if (payload.stop_hook_active) process.exit(0);
   if (!fs.existsSync(QUEUE_SCRIPT)) process.exit(0);
 
-  const chainStateFile = path.join(os.homedir(), ".claude-queue", "chain_state.json");
-  if (fs.existsSync(chainStateFile)) {
+  // cwd é um campo comum garantido em todo hook (doc oficial), mas sem ele
+  // não dá pra escopar com segurança nem o lock de encadeamento nem a
+  // seleção de task por pasta — melhor não fazer nada do que arriscar picar
+  // a pasta errada.
+  const cwd = payload.cwd || "";
+  if (!cwd) process.exit(0);
+
+  const pendingCheck = runQueue("has-pending", "--cwd", cwd);
+  if (pendingCheck && pendingCheck.status === 0) {
     const { text, source } = finalAssistantText(payload);
-    if (text.includes(FAIL_MARKER)) {
-      const reason = text.split(FAIL_MARKER)[1].trim().split("\n")[0].slice(0, 200);
-      runQueue("chain-result", "fail", reason || "sem motivo informado");
+    const { marker, reason } = findMarker(text);
+    if (marker === "fail") {
+      runQueue("chain-result", "fail", reason || "sem motivo informado", "--cwd", cwd);
       process.exit(0); // para a corrente
-    } else if (text.includes(OK_MARKER)) {
-      runQueue("chain-result", "ok");
+    } else if (marker === "ok") {
+      runQueue("chain-result", "ok", "--cwd", cwd);
     } else {
       logMissingMarker(source, text);
-      runQueue("chain-result", "fail", "resposta terminou sem marcador de conclusão");
+      runQueue("chain-result", "fail", "resposta terminou sem marcador de conclusão", "--cwd", cwd);
       process.exit(0); // fail-safe: sem marcador, para
     }
   }
 
-  const result = runQueue("chain-next", "--cwd", payload.cwd || "");
+  const result = runQueue("chain-next", "--cwd", cwd);
   if (!result || result.status !== 0) process.exit(0);
 
   const nextPrompt = (result.stdout || "").trim();
@@ -159,4 +193,13 @@ function main() {
   process.exit(0);
 }
 
-main();
+if (require.main === module) {
+  try {
+    main();
+  } catch {
+    // fail-open: qualquer bug inesperado aqui deixa a sessão parar normal
+    process.exit(0);
+  }
+}
+
+module.exports = { extractText, finalAssistantText, findMarker };
