@@ -13,7 +13,12 @@ Script: `${CLAUDE_PLUGIN_ROOT}/scripts/queue.js` (Node, sem dependências extern
 
 `/queue add "<prompt>" [--dir <path>] [--priority N] [--after <id>] [--auto]`
 Adiciona prompt na fila.
-- `--dir`: diretório de trabalho da task (default: diretório atual)
+- `--dir`: diretório de trabalho da task (default: diretório atual). No modo
+  `run` isso é respeitado de verdade (sobe o subprocesso `claude -p` nessa
+  pasta). No encadeamento em sessão (hook Stop), a task só é puxada quando
+  existe uma sessão aberta exatamente nessa pasta — `chain-next` recebe
+  `--cwd` do hook e filtra por isso, pra uma task de um projeto nunca rodar
+  por engano na sessão aberta de outro projeto.
 - `--priority`: maior número roda primeiro (default 0)
 - `--after <id>`: só roda depois que a task `<id>` terminar com sucesso
 - `--auto`: roda com `--dangerously-skip-permissions`. Só use se confiar 100% no prompt/diretório.
@@ -47,9 +52,18 @@ Se `${CLAUDE_PLUGIN_ROOT}` não estiver setado (instalação manual/dev), usar o
 O plugin já vem com o hook `Stop` registrado. Toda vez que uma resposta termina:
 
 1. Confere se a task que acabou de rodar terminou com `[QUEUE:OK]` na última linha da resposta. Sem esse marcador (ou com `[QUEUE:FAIL] motivo`), considera falha e **para a corrente** — não emenda a próxima task. Isso é fail-safe de propósito: sem confirmação explícita de sucesso, não arrisca encadear em cima de algo que pode ter quebrado.
-2. Se ok, pega a próxima task da fila e injeta como continuação da mesma conversa, sem o usuário digitar nada.
+2. Se ok, pega a próxima task da fila **pra essa mesma pasta** (`chain-next --cwd`, ver seção `--dir` acima) e injeta como continuação da mesma conversa, sem o usuário digitar nada.
 
 O texto do marcador já vem anexado automaticamente ao prompt pelo `chain-next` — não precisa fazer nada manual, só `/queue add`.
+
+O hook lê o texto final da resposta pelo campo `last_assistant_message` que o
+próprio Claude Code manda no payload do Stop (campo oficial, recomendado pela
+doc do Claude Code pra esse exato caso) — só cai pra reler o transcript na mão
+se esse campo não vier. Ler o transcript manualmente tem race condition
+conhecida (a última linha pode não estar gravada no disco ainda quando o hook
+roda), que já causou falso "sem marcador de conclusão" em uso real mesmo com
+o marcador presente na resposta. Se isso acontecer, fica registrado em
+`~/.claude-queue/logs/hook-debug.log`.
 
 ## Rate limit (modo `run`/background)
 

@@ -41,19 +41,57 @@ function parseArgs(argv) {
   return out;
 }
 
+// Flags que esperam valor (--dir, --priority, --after, --cwd, --port) podem
+// virar `true` (boolean) no parseArgs se o usuário esquecer o valor (ex:
+// "--dir --priority 5"). strArg trata isso como "não informado" em vez de
+// deixar o `true` vazar pra path.resolve/parseInt e quebrar com stack trace.
+function strArg(args, key) {
+  const v = args[key];
+  return typeof v === "string" ? v : undefined;
+}
+
 function cmdAdd(args) {
   const prompt = args._[0];
   if (!prompt) {
     console.error("erro: prompt vazio");
     process.exit(1);
   }
+
+  const dirArg = strArg(args, "dir");
+  if (args.dir !== undefined && dirArg === undefined) {
+    console.error("aviso: --dir sem valor, ignorando (usando diretório atual)");
+  }
+
+  const priorityArg = strArg(args, "priority");
+  if (args.priority !== undefined && priorityArg === undefined) {
+    console.error("aviso: --priority sem valor, ignorando (usando 0)");
+  }
+  let priority = 0;
+  if (priorityArg !== undefined) {
+    priority = parseInt(priorityArg, 10);
+    if (Number.isNaN(priority)) {
+      console.error(`erro: --priority precisa ser um número, recebido "${priorityArg}"`);
+      process.exit(1);
+    }
+  }
+
+  const afterArg = strArg(args, "after");
+  if (args.after !== undefined && afterArg === undefined) {
+    console.error("aviso: --after sem valor, ignorando (sem dependência)");
+  }
+
   const tasks = store.load();
+
+  if (afterArg && !tasks.some((t) => t.id === afterArg)) {
+    console.error(`aviso: --after ${afterArg} não corresponde a nenhuma task na fila agora — essa task vai ficar travada até uma task com esse id existir e terminar`);
+  }
+
   const task = {
     id: newId(),
     prompt,
-    dir: args.dir ? path.resolve(args.dir) : process.cwd(),
-    priority: args.priority ? parseInt(args.priority, 10) : 0,
-    after: args.after || null,
+    dir: dirArg ? path.resolve(dirArg) : process.cwd(),
+    priority,
+    after: afterArg || null,
     auto: !!args.auto,
     status: "queued",
     created_at: now(),
@@ -94,16 +132,31 @@ function cmdRemove(args) {
   console.log(`removida: ${id}`);
 }
 
-function isEligible(t, doneIds) {
+function sameDir(a, b) {
+  if (!a || !b) return false;
+  const na = path.resolve(a);
+  const nb = path.resolve(b);
+  return process.platform === "win32" ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+// cwd só é usado pelo modo de encadeamento em sessão (chain-next, via hook
+// Stop): uma task só pode ser "puxada" pra continuar a sessão atual se foi
+// enfileirada pra rodar nessa mesma pasta. Sem isso, qualquer sessão aberta
+// (de qualquer projeto) podia roubar e rodar uma task destinada a outra
+// pasta — o `--dir` configurado no /queue add virava decoração. O modo
+// `run` (background) não usa esse filtro: ele já respeita task.dir de
+// verdade, abrindo o subprocesso `claude -p` com cwd correto.
+function isEligible(t, doneIds, cwd) {
   const statusOk = t.status === "queued" || (t.status === "rate_limited" && t.retry_at && Date.parse(t.retry_at) <= Date.now());
   if (!statusOk) return false;
   if (t.after && !doneIds.has(t.after)) return false;
+  if (cwd && t.dir && !sameDir(t.dir, cwd)) return false;
   return true;
 }
 
-function pickNext(tasks) {
+function pickNext(tasks, cwd) {
   const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
-  const candidates = tasks.filter((t) => isEligible(t, doneIds));
+  const candidates = tasks.filter((t) => isEligible(t, doneIds, cwd));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
   return candidates[0];
@@ -146,13 +199,14 @@ function cmdRun(args) {
   }
 }
 
-function cmdChainNext() {
+function cmdChainNext(args) {
   const state = store.loadChainState();
   if (state !== null) {
     process.exit(3);
   }
   const tasks = store.load();
-  const next = pickNext(tasks);
+  const cwd = strArg(args, "cwd");
+  const next = pickNext(tasks, cwd);
   if (!next) process.exit(2);
 
   next.status = "running";
@@ -219,7 +273,7 @@ function main() {
     case "run":
       return cmdRun(args);
     case "chain-next":
-      return cmdChainNext();
+      return cmdChainNext(args);
     case "chain-result":
       return cmdChainResult(args);
     case "stats":
@@ -232,4 +286,9 @@ function main() {
   }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  console.error(`erro inesperado: ${err.message}`);
+  process.exit(1);
+}

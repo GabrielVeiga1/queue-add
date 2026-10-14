@@ -62,7 +62,11 @@ Opções que dá pra combinar:
 ```
 /queue add "atualiza o changelog" --dir ~/projetos/api --priority 10
 ```
-- `--dir <pasta>` — em qual pasta a tarefa deve rodar (padrão: a pasta atual)
+- `--dir <pasta>` — em qual pasta a tarefa deve rodar (padrão: a pasta atual). No
+  encadeamento automático (dentro da sessão), a tarefa só é puxada numa sessão
+  aberta exatamente nessa pasta — se nenhuma sessão estiver aberta lá, ela fica
+  esperando na fila até uma estar (ou até você rodar `/queue run`, que não tem
+  essa limitação).
 - `--priority <número>` — número maior roda primeiro (padrão: 0)
 - `--after <id>` — só roda depois que a tarefa com esse id terminar com sucesso
 - `--auto` — pula as confirmações de permissão. **Só use em pastas/pedidos que você confia 100%.**
@@ -116,13 +120,9 @@ até no máximo 4h de espera).
 
 - **`--auto` pula as confirmações de permissão.** Só use em pedidos e pastas
   de confiança total — o Claude vai poder mexer em arquivos sem perguntar.
-- **O modo `/queue run` (rodar tudo em background, tipo "deixa rodando a
-  noite inteira") ainda não funciona no Windows.** O encadeamento automático
-  dentro da mesma sessão (o jeito normal de usar, descrito acima) funciona
-  normalmente — é só esse modo específico de rodar sem sessão aberta que
-  está quebrado por enquanto.
-- O painel (`/queue dashboard`) mostra o texto dos pedidos exatamente como
-  foram digitados — evite colar coisas estranhas/código ali dentro.
+- Se o encadeamento automático parar sem motivo aparente (terminou a tarefa
+  mas não emendou a próxima), dá pra conferir `~/.claude-queue/logs/hook-debug.log`
+  — ele registra os casos em que o hook não achou o marcador de conclusão.
 - Os dados da fila ficam salvos em `~/.claude-queue/` no seu computador
   (histórico de tarefas e logs). Nada disso sai da sua máquina.
 

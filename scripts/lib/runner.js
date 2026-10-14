@@ -89,15 +89,35 @@ function runTask(task) {
   store.ensureLogsDir();
   const logPath = path.join(store.LOGS_DIR, `${task.id}.log`);
 
-  const args = ["-p", task.prompt, "--output-format", "json"];
+  // O prompt vai via STDIN (`input`), nunca como argumento de linha de
+  // comando. `claude -p` lê o prompt do stdin quando não recebe argumento
+  // posicional. Isso evita dois problemas reais: (1) no Windows, com
+  // shell:true (necessário abaixo), caracteres como `<` e `>` no prompt são
+  // tratados como operadores de redirecionamento pelo cmd.exe MESMO dentro
+  // de aspas — testado e confirmado (um prompt com "<algo>" quebrava a
+  // chamada inteira); (2) fecha de vez qualquer risco de shell injection via
+  // prompt, já que nenhum texto do usuário chega a tocar a linha de comando
+  // interpretada pelo shell — só os args fixos abaixo (-p, --output-format,
+  // json, opcionalmente --dangerously-skip-permissions) passam por ali.
+  const args = ["-p", "--output-format", "json"];
   if (task.auto) args.push("--dangerously-skip-permissions");
+
+  // No Windows o binário `claude` instalado via npm é um shim `.cmd`, que o
+  // Windows só executa através de um shell (cmd.exe) — sem isso, spawnSync
+  // falha com ENOENT mesmo com o comando certo no PATH. `shell: true` é a
+  // única forma suportada pelo Node de rodar um .cmd aqui.
+  const prevNoDeprecation = process.noDeprecation;
+  if (process.platform === "win32") process.noDeprecation = true; // DEP0190 — args são todos literais fixos, sem conteúdo do usuário
 
   const startedAt = Date.now();
   const result = spawnSync("claude", args, {
     cwd: task.dir,
+    input: task.prompt,
     encoding: "utf8",
     maxBuffer: 1024 * 1024 * 32,
+    shell: process.platform === "win32",
   });
+  process.noDeprecation = prevNoDeprecation;
   const durationMs = Date.now() - startedAt;
 
   fs.writeFileSync(logPath, `${result.stdout || ""}\n${result.stderr || ""}`, "utf8");

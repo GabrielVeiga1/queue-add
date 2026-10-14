@@ -24,7 +24,12 @@ function load() {
 
 function save(tasks) {
   ensureDir();
-  fs.writeFileSync(TASKS_FILE, JSON.stringify(tasks, null, 2), "utf8");
+  // escreve em arquivo temporário e troca com rename (atômico no mesmo
+  // filesystem) — evita tasks.json corrompido/truncado se o processo
+  // morrer no meio da escrita.
+  const tmp = `${TASKS_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(tasks, null, 2), "utf8");
+  fs.renameSync(tmp, TASKS_FILE);
 }
 
 function loadChainState() {
@@ -39,7 +44,24 @@ function loadChainState() {
 function saveChainState(state) {
   ensureDir();
   if (state === null) {
-    fs.rmSync(CHAIN_STATE_FILE, { force: true });
+    try {
+      fs.rmSync(CHAIN_STATE_FILE, { force: true });
+    } catch {
+      // No Windows o arquivo pode estar momentaneamente travado (ex:
+      // antivírus) e `rmSync` pode lançar EPERM mesmo com force:true (que só
+      // ignora "arquivo não existe", não erro de permissão/lock). Sem esse
+      // catch, isso derruba o processo e deixa chain_state.json órfão — o
+      // que travaria TODO encadeamento futuro pra sempre (loadChainState
+      // sempre acharia um estado pendente). Em vez de deletar, sobrescreve
+      // com conteúdo inválido: loadChainState() trata JSON inválido como
+      // "sem estado", então o efeito é o mesmo sem depender de conseguir
+      // remover o arquivo.
+      try {
+        fs.writeFileSync(CHAIN_STATE_FILE, "", "utf8");
+      } catch {
+        // pior caso: deixa como está, a próxima chamada tenta de novo.
+      }
+    }
   } else {
     fs.writeFileSync(CHAIN_STATE_FILE, JSON.stringify(state), "utf8");
   }

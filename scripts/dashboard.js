@@ -10,10 +10,6 @@ const STATUS_COLOR = {
   rate_limited: "#f1c40f",
 };
 
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
 const PAGE = `<!doctype html>
 <html lang="pt-BR">
 <head>
@@ -47,6 +43,13 @@ const PAGE = `<!doctype html>
   <div class="empty" id="empty" style="display:none">fila vazia</div>
 
 <script>
+// as tasks (prompt, dir, id) são texto digitado pelo usuário e podem conter
+// HTML/JS — nunca jogar direto em innerHTML sem escapar (o próprio README
+// avisa: "evite colar código ali dentro", mas é bug nosso depender disso).
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
 async function tick() {
   const res = await fetch('/api/tasks');
   const tasks = await res.json();
@@ -57,7 +60,7 @@ async function tick() {
   const byStatus = {};
   for (const t of tasks) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
   statsEl.innerHTML = Object.entries(byStatus).map(([s, n]) =>
-    \`<div class="stat"><div class="n">\${n}</div><div class="l">\${s}</div></div>\`
+    \`<div class="stat"><div class="n">\${n}</div><div class="l">\${esc(s)}</div></div>\`
   ).join('') || '';
 
   if (tasks.length === 0) {
@@ -71,11 +74,11 @@ async function tick() {
   const sorted = [...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
   rows.innerHTML = sorted.map(t => \`
     <tr>
-      <td><span class="status" style="background:\${colors[t.status] || '#888'}">\${t.status}</span></td>
-      <td>\${t.id}</td>
-      <td>\${t.priority}</td>
-      <td title="\${t.dir}">\${t.dir.split(/[\\\\/]/).pop()}</td>
-      <td class="prompt" title="\${t.prompt.replace(/"/g,'&quot;')}">\${t.prompt}</td>
+      <td><span class="status" style="background:\${colors[t.status] || '#888'}">\${esc(t.status)}</span></td>
+      <td>\${esc(t.id)}</td>
+      <td>\${esc(t.priority)}</td>
+      <td title="\${esc(t.dir)}">\${esc(t.dir.split(/[\\\\/]/).pop())}</td>
+      <td class="prompt" title="\${esc(t.prompt)}">\${esc(t.prompt)}</td>
     </tr>
   \`).join('');
 }

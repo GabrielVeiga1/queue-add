@@ -1,7 +1,7 @@
 {
   "name": "claude-queue",
   "displayName": "Claude Queue",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Fila local de prompts pro Claude Code: encadeia tasks automaticamente na mesma sessão (com confirmação de sucesso por marcador), roda em background via claude -p, e recua sozinho quando bate rate limit. Sem session key, sem endpoint interno.",
   "author": {
     "name": "Gabriel Veiga",
